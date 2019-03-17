@@ -6,7 +6,6 @@ import android.media.AudioManager;
 import android.media.AudioTrack;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
-import android.media.MediaMuxer;
 import android.os.Build;
 import android.support.annotation.RequiresApi;
 import android.util.Log;
@@ -51,14 +50,7 @@ public abstract class FromFileBase
   private GlInterface glInterface;
   private boolean streaming = false;
   private boolean videoEnabled = true;
-  //record
-  private MediaMuxer mediaMuxer;
-  private int videoTrack = -1;
-  private int audioTrack = -1;
-  private boolean recording = false;
-  private boolean canRecord = false;
-  private MediaFormat videoFormat;
-  private MediaFormat audioFormat;
+  private RecordController recordController;
 
   private VideoDecoder videoDecoder;
   private AudioDecoder audioDecoder;
@@ -82,20 +74,23 @@ public abstract class FromFileBase
       AudioDecoderInterface audioDecoderInterface) {
     this.context = context;
     glInterface = new OffScreenGlThread(context);
+    glInterface.init();
     init(videoDecoderInterface, audioDecoderInterface);
   }
 
   public FromFileBase(OpenGlView openGlView, VideoDecoderInterface videoDecoderInterface,
       AudioDecoderInterface audioDecoderInterface) {
-    this.context = openGlView.getContext();
+    context = openGlView.getContext();
     glInterface = openGlView;
+    glInterface.init();
     init(videoDecoderInterface, audioDecoderInterface);
   }
 
   public FromFileBase(LightOpenGlView lightOpenGlView, VideoDecoderInterface videoDecoderInterface,
       AudioDecoderInterface audioDecoderInterface) {
-    this.context = lightOpenGlView.getContext();
+    context = lightOpenGlView.getContext();
     glInterface = lightOpenGlView;
+    glInterface.init();
     init(videoDecoderInterface, audioDecoderInterface);
   }
 
@@ -105,6 +100,7 @@ public abstract class FromFileBase
     this.audioDecoderInterface = audioDecoderInterface;
     videoEncoder = new VideoEncoder(this);
     audioEncoder = new AudioEncoder(this);
+    recordController = new RecordController();
   }
 
   /**
@@ -126,18 +122,9 @@ public abstract class FromFileBase
     videoPath = filePath;
     videoDecoder = new VideoDecoder(videoDecoderInterface, this);
     if (!videoDecoder.initExtractor(filePath)) return false;
-    boolean result =
-        videoEncoder.prepareVideoEncoder(videoDecoder.getWidth(), videoDecoder.getHeight(), 30,
-            bitRate, rotation, true, 2, FormatVideoEncoder.SURFACE);
-    if (context != null) {
-      if (glInterface instanceof OffScreenGlThread) {
-        glInterface = new OffScreenGlThread(context);
-      }
-      glInterface.setRotation(rotation);
-      glInterface.setEncoderSize(videoDecoder.getWidth(), videoDecoder.getHeight());
-      glInterface.init();
-    }
-    return result;
+    boolean hardwareRotation = glInterface == null;
+    return videoEncoder.prepareVideoEncoder(videoDecoder.getWidth(), videoDecoder.getHeight(), 30,
+        bitRate, rotation, hardwareRotation, 2, FormatVideoEncoder.SURFACE);
   }
 
   public boolean prepareVideo(String filePath) throws IOException {
@@ -159,7 +146,7 @@ public abstract class FromFileBase
         audioDecoder.isStereo());
     prepareAudioRtp(audioDecoder.isStereo(), audioDecoder.getSampleRate());
     audioDecoder.prepareAudio();
-    if (context != null && !(glInterface instanceof OffScreenGlThread)) {
+    if (glInterface != null && !(glInterface instanceof OffScreenGlThread)) {
       int channel =
           audioDecoder.isStereo() ? AudioFormat.CHANNEL_OUT_STEREO : AudioFormat.CHANNEL_OUT_MONO;
       int buffSize = AudioTrack.getMinBufferSize(audioDecoder.getSampleRate(), channel,
@@ -191,9 +178,8 @@ public abstract class FromFileBase
    * @param path where file will be saved.
    * @throws IOException If you init it before start stream.
    */
-  public void startRecord(String path) throws IOException {
-    mediaMuxer = new MediaMuxer(path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
-    recording = true;
+  public void startRecord(String path, RecordController.Listener listener) throws IOException {
+    recordController.startRecord(path, listener);
     if (!streaming) {
       startEncoders();
     } else if (videoEncoder.isRunning()) {
@@ -201,21 +187,15 @@ public abstract class FromFileBase
     }
   }
 
+  public void startRecord(final String path) throws IOException {
+    startRecord(path, null);
+  }
+
   /**
    * Stop record MP4 video started with @startRecord. If you don't call it file will be unreadable.
    */
   public void stopRecord() {
-    recording = false;
-    if (mediaMuxer != null) {
-      if (canRecord) {
-        mediaMuxer.stop();
-        mediaMuxer.release();
-        canRecord = false;
-      }
-      mediaMuxer = null;
-    }
-    videoTrack = -1;
-    audioTrack = -1;
+    recordController.stopRecord();
     if (!streaming) stopStream();
   }
 
@@ -234,7 +214,7 @@ public abstract class FromFileBase
    */
   public void startStream(String url) {
     streaming = true;
-    if (!recording) {
+    if (!recordController.isRecording()) {
       startEncoders();
     } else {
       resetVideoEncoder();
@@ -243,26 +223,40 @@ public abstract class FromFileBase
   }
 
   private void startEncoders() {
-    if (context != null) {
-      if (glInterface instanceof OffScreenGlThread) {
-        ((OffScreenGlThread) glInterface).setFps(videoEncoder.getFps());
-      }
-      glInterface.start();
-      glInterface.addMediaCodecSurface(videoEncoder.getInputSurface());
-      videoDecoder.prepareVideo(glInterface.getSurface());
-    } else {
-      videoDecoder.prepareVideo(videoEncoder.getInputSurface());
-    }
     videoEncoder.start();
     if (audioTrackPlayer != null) audioTrackPlayer.play();
     audioEncoder.start();
+    prepareGlView();
     videoDecoder.start();
     audioDecoder.start();
   }
 
+  private void prepareGlView() {
+    if (glInterface != null && Build.VERSION.SDK_INT >= 18) {
+      if (glInterface instanceof OffScreenGlThread) {
+        glInterface = new OffScreenGlThread(context);
+        glInterface.init();
+        ((OffScreenGlThread) glInterface).setFps(videoEncoder.getFps());
+      }
+      if (videoEncoder.getRotation() == 90 || videoEncoder.getRotation() == 270) {
+        glInterface.setEncoderSize(videoEncoder.getHeight(), videoEncoder.getWidth());
+      } else {
+        glInterface.setEncoderSize(videoEncoder.getWidth(), videoEncoder.getHeight());
+      }
+      glInterface.setRotation(0);
+      glInterface.start();
+      if (videoEncoder.getInputSurface() != null) {
+        glInterface.addMediaCodecSurface(videoEncoder.getInputSurface());
+      }
+      videoDecoder.prepareVideo(glInterface.getSurface());
+    } else {
+      videoDecoder.prepareVideo(videoEncoder.getInputSurface());
+    }
+  }
+
   private void resetVideoEncoder() {
     try {
-      if (context != null) {
+      if (glInterface != null) {
         glInterface.removeMediaCodecSurface();
         glInterface.stop();
       }
@@ -273,16 +267,7 @@ public abstract class FromFileBase
         throw new IOException("fail to reset video file");
       }
       videoEncoder.reset();
-      if (context != null) {
-        if (glInterface instanceof OffScreenGlThread) {
-          ((OffScreenGlThread) glInterface).setFps(videoEncoder.getFps());
-        }
-        glInterface.start();
-        glInterface.addMediaCodecSurface(videoEncoder.getInputSurface());
-        videoDecoder.prepareVideo(glInterface.getSurface());
-      } else {
-        videoDecoder.prepareVideo(videoEncoder.getInputSurface());
-      }
+      prepareGlView();
       videoDecoder.start();
       videoDecoder.moveTo(time);
     } catch (IOException e) {
@@ -300,8 +285,8 @@ public abstract class FromFileBase
       streaming = false;
       stopStreamRtp();
     }
-    if (!recording) {
-      if (context != null) {
+    if (!recordController.isRecording()) {
+      if (glInterface != null) {
         glInterface.removeMediaCodecSurface();
         glInterface.stop();
       }
@@ -314,8 +299,7 @@ public abstract class FromFileBase
       audioTrackPlayer = null;
       videoEncoder.stop();
       audioEncoder.stop();
-      videoFormat = null;
-      audioFormat = null;
+      recordController.resetFormats();
     }
   }
 
@@ -420,7 +404,19 @@ public abstract class FromFileBase
    * @return true if recording, false if not recoding.
    */
   public boolean isRecording() {
-    return recording;
+    return recordController.isRecording();
+  }
+
+  public void pauseRecord() {
+    recordController.pauseRecord();
+  }
+
+  public void resumeRecord() {
+    recordController.resumeRecord();
+  }
+
+  public RecordController.Status getRecordStatus() {
+    return recordController.getStatus();
   }
 
   /**
@@ -466,7 +462,7 @@ public abstract class FromFileBase
     synchronized (sync) {
       try {
         if (isVideo) {
-          if (context != null) {
+          if (glInterface != null) {
             glInterface.removeMediaCodecSurface();
             glInterface.stop();
           }
@@ -475,16 +471,7 @@ public abstract class FromFileBase
           if (!videoDecoder.initExtractor(videoPath)) {
             throw new IOException("fail to reset video file");
           }
-          if (context != null) {
-            if (glInterface instanceof OffScreenGlThread) {
-              ((OffScreenGlThread) glInterface).setFps(videoEncoder.getFps());
-            }
-            glInterface.start();
-            glInterface.addMediaCodecSurface(videoEncoder.getInputSurface());
-            videoDecoder.prepareVideo(glInterface.getSurface());
-          } else {
-            videoDecoder.prepareVideo(videoEncoder.getInputSurface());
-          }
+          prepareGlView();
           videoDecoder.start();
         } else {
           audioDecoder.stop();
@@ -522,39 +509,26 @@ public abstract class FromFileBase
 
   @Override
   public void getVideoData(ByteBuffer h264Buffer, MediaCodec.BufferInfo info) {
-    if (recording) {
-      if (info.flags == MediaCodec.BUFFER_FLAG_KEY_FRAME
-          && !canRecord
-          && videoFormat != null
-          && audioFormat != null) {
-        videoTrack = mediaMuxer.addTrack(videoFormat);
-        audioTrack = mediaMuxer.addTrack(audioFormat);
-        mediaMuxer.start();
-        canRecord = true;
-      }
-      if (canRecord) mediaMuxer.writeSampleData(videoTrack, h264Buffer, info);
-    }
+    recordController.recordVideo(h264Buffer, info);
     if (streaming) getH264DataRtp(h264Buffer, info);
   }
 
   @Override
   public void onVideoFormat(MediaFormat mediaFormat) {
-    videoFormat = mediaFormat;
+    recordController.setVideoFormat(mediaFormat);
   }
 
   protected abstract void getAacDataRtp(ByteBuffer aacBuffer, MediaCodec.BufferInfo info);
 
   @Override
   public void getAacData(ByteBuffer aacBuffer, MediaCodec.BufferInfo info) {
-    if (recording && canRecord) {
-      mediaMuxer.writeSampleData(audioTrack, aacBuffer, info);
-    }
+    recordController.recordAudio(aacBuffer, info);
     if (streaming) getAacDataRtp(aacBuffer, info);
   }
 
   @Override
   public void onAudioFormat(MediaFormat mediaFormat) {
-    audioFormat = mediaFormat;
+    recordController.setAudioFormat(mediaFormat);
   }
 
   @Override

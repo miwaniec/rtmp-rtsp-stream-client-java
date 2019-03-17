@@ -5,7 +5,6 @@ import android.content.Intent;
 import android.hardware.display.VirtualDisplay;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
-import android.media.MediaMuxer;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
@@ -49,28 +48,25 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
   private boolean streaming = false;
   protected SurfaceView surfaceView;
   private boolean videoEnabled = true;
-  //record
-  private MediaMuxer mediaMuxer;
-  private int videoTrack = -1;
-  private int audioTrack = -1;
-  private boolean recording = false;
-  private boolean canRecord = false;
-  private MediaFormat videoFormat;
-  private MediaFormat audioFormat;
   private int dpi = 320;
   private VirtualDisplay virtualDisplay;
   private int resultCode = -1;
   private Intent data;
+  private RecordController recordController;
 
   public DisplayBase(Context context, boolean useOpengl) {
     this.context = context;
-    if (useOpengl) glInterface = new OffScreenGlThread(context);
+    if (useOpengl) {
+      glInterface = new OffScreenGlThread(context);
+      glInterface.init();
+    }
     mediaProjectionManager =
         ((MediaProjectionManager) context.getSystemService(MEDIA_PROJECTION_SERVICE));
     this.surfaceView = null;
     videoEncoder = new VideoEncoder(this);
     microphoneManager = new MicrophoneManager(this);
     audioEncoder = new AudioEncoder(this);
+    recordController = new RecordController();
   }
 
   /**
@@ -103,8 +99,8 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
             FormatVideoEncoder.SURFACE);
     if (glInterface != null) {
       glInterface = new OffScreenGlThread(context);
-      glInterface.setEncoderSize(videoEncoder.getWidth(), videoEncoder.getHeight());
       glInterface.init();
+      glInterface.setEncoderSize(videoEncoder.getWidth(), videoEncoder.getHeight());
     }
     return result;
   }
@@ -169,9 +165,8 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
    * @param path where file will be saved.
    * @throws IOException If you init it before start stream.
    */
-  public void startRecord(String path) throws IOException {
-    mediaMuxer = new MediaMuxer(path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
-    recording = true;
+  public void startRecord(String path, RecordController.Listener listener) throws IOException {
+    recordController.startRecord(path, listener);
     if (!streaming) {
       startEncoders(resultCode, data);
     } else if (videoEncoder.isRunning()) {
@@ -179,21 +174,15 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
     }
   }
 
+  public void startRecord(final String path) throws IOException {
+    startRecord(path, null);
+  }
+
   /**
    * Stop record MP4 video started with @startRecord. If you don't call it file will be unreadable.
    */
   public void stopRecord() {
-    recording = false;
-    if (mediaMuxer != null) {
-      if (canRecord) {
-        mediaMuxer.stop();
-        mediaMuxer.release();
-        canRecord = false;
-      }
-      mediaMuxer = null;
-    }
-    videoTrack = -1;
-    audioTrack = -1;
+    recordController.stopRecord();
     if (!streaming) stopStream();
   }
 
@@ -226,7 +215,7 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
    */
   public void startStream(String url) {
     streaming = true;
-    if (!recording) {
+    if (!recordController.isRecording()) {
       startEncoders(resultCode, data);
     } else {
       resetVideoEncoder();
@@ -276,7 +265,7 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
       streaming = false;
       stopStreamRtp();
     }
-    if (!recording) {
+    if (!recordController.isRecording()) {
       microphoneManager.stop();
       if (mediaProjection != null) {
         mediaProjection.stop();
@@ -287,9 +276,8 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
       }
       videoEncoder.stop();
       audioEncoder.stop();
-      videoFormat = null;
-      audioFormat = null;
       data = null;
+      recordController.resetFormats();
     }
   }
 
@@ -402,16 +390,26 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
    * @return true if recording, false if not recoding.
    */
   public boolean isRecording() {
-    return recording;
+    return recordController.isRecording();
+  }
+
+  public void pauseRecord() {
+    recordController.pauseRecord();
+  }
+
+  public void resumeRecord() {
+    recordController.resumeRecord();
+  }
+
+  public RecordController.Status getRecordStatus() {
+    return recordController.getStatus();
   }
 
   protected abstract void getAacDataRtp(ByteBuffer aacBuffer, MediaCodec.BufferInfo info);
 
   @Override
   public void getAacData(ByteBuffer aacBuffer, MediaCodec.BufferInfo info) {
-    if (recording && canRecord) {
-      mediaMuxer.writeSampleData(audioTrack, aacBuffer, info);
-    }
+    recordController.recordAudio(aacBuffer, info);
     if (streaming) getAacDataRtp(aacBuffer, info);
   }
 
@@ -431,18 +429,7 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
 
   @Override
   public void getVideoData(ByteBuffer h264Buffer, MediaCodec.BufferInfo info) {
-    if (recording) {
-      if (info.flags == MediaCodec.BUFFER_FLAG_KEY_FRAME
-          && !canRecord
-          && videoFormat != null
-          && audioFormat != null) {
-        videoTrack = mediaMuxer.addTrack(videoFormat);
-        audioTrack = mediaMuxer.addTrack(audioFormat);
-        mediaMuxer.start();
-        canRecord = true;
-      }
-      if (canRecord) mediaMuxer.writeSampleData(videoTrack, h264Buffer, info);
-    }
+    recordController.recordVideo(h264Buffer, info);
     if (streaming) getH264DataRtp(h264Buffer, info);
   }
 
@@ -453,12 +440,12 @@ public abstract class DisplayBase implements GetAacData, GetVideoData, GetMicrop
 
   @Override
   public void onVideoFormat(MediaFormat mediaFormat) {
-    videoFormat = mediaFormat;
+    recordController.setVideoFormat(mediaFormat);
   }
 
   @Override
   public void onAudioFormat(MediaFormat mediaFormat) {
-    audioFormat = mediaFormat;
+    recordController.setAudioFormat(mediaFormat);
   }
 }
 

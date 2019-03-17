@@ -26,6 +26,10 @@
           android:title="@string/beauty"
           />
       <item
+          android:id="@+id/black"
+          android:title="@string/black"
+          />
+      <item
           android:id="@+id/blur"
           android:title="@string/blur"
           />
@@ -36,6 +40,10 @@
       <item
           android:id="@+id/cartoon"
           android:title="@string/cartoon"
+          />
+      <item
+          android:id="@+id/circle"
+          android:title="@string/circle"
           />
       <item
           android:id="@+id/color"

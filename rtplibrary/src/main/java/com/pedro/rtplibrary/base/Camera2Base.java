@@ -1,9 +1,9 @@
 package com.pedro.rtplibrary.base;
 
 import android.content.Context;
+import android.hardware.camera2.CameraCharacteristics;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
-import android.media.MediaMuxer;
 import android.os.Build;
 import android.support.annotation.RequiresApi;
 import android.util.Size;
@@ -54,16 +54,9 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
   private TextureView textureView;
   private GlInterface glInterface;
   private boolean videoEnabled = false;
-  //record
-  private MediaMuxer mediaMuxer;
-  private int videoTrack = -1;
-  private int audioTrack = -1;
-  private boolean recording = false;
-  private boolean canRecord = false;
   private boolean onPreview = false;
-  private MediaFormat videoFormat;
-  private MediaFormat audioFormat;
   private boolean isBackground = false;
+  private RecordController recordController;
 
   public Camera2Base(SurfaceView surfaceView) {
     this.surfaceView = surfaceView;
@@ -106,6 +99,7 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
     videoEncoder = new VideoEncoder(this);
     microphoneManager = new MicrophoneManager(this);
     audioEncoder = new AudioEncoder(this);
+    recordController = new RecordController();
   }
 
   /**
@@ -131,6 +125,18 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
 
   public boolean isFrontCamera() {
     return cameraManager.isFrontCamera();
+  }
+
+  public void enableLantern() throws Exception {
+    cameraManager.enableLantern();
+  }
+
+  public void disableLantern() {
+    cameraManager.disableLantern();
+  }
+
+  public boolean isLanternEnabled() {
+    return cameraManager.isLanternEnabled();
   }
 
   /**
@@ -236,9 +242,8 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
    * @param path where file will be saved.
    * @throws IOException If you init it before start stream.
    */
-  public void startRecord(String path) throws IOException {
-    mediaMuxer = new MediaMuxer(path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
-    recording = true;
+  public void startRecord(String path, RecordController.Listener listener) throws IOException {
+    recordController.startRecord(path, listener);
     if (!streaming) {
       startEncoders();
     } else if (videoEncoder.isRunning()) {
@@ -246,21 +251,15 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
     }
   }
 
+  public void startRecord(final String path) throws IOException {
+    startRecord(path, null);
+  }
+
   /**
    * Stop record MP4 video started with @startRecord. If you don't call it file will be unreadable.
    */
   public void stopRecord() {
-    recording = false;
-    if (mediaMuxer != null) {
-      if (canRecord) {
-        mediaMuxer.stop();
-        mediaMuxer.release();
-        canRecord = false;
-      }
-      mediaMuxer = null;
-    }
-    videoTrack = -1;
-    audioTrack = -1;
+    recordController.stopRecord();
     if (!streaming) stopStream();
   }
 
@@ -272,31 +271,35 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
    * @param rotation camera rotation (0, 90, 180, 270). Recommended: {@link
    * com.pedro.encoder.input.video.CameraHelper#getCameraOrientation(Context)}
    */
-  public void startPreview(CameraHelper.Facing cameraFacing, int rotation) {
+  public void startPreview(CameraHelper.Facing cameraFacing, int width, int height, int rotation) {
     if (!isStreaming() && !onPreview && !isBackground) {
       if (surfaceView != null) {
         cameraManager.prepareCamera(surfaceView.getHolder().getSurface());
       } else if (textureView != null) {
         cameraManager.prepareCamera(new Surface(textureView.getSurfaceTexture()));
       } else if (glInterface != null) {
-        boolean isCamera2Landscape = context.getResources().getConfiguration().orientation != 1;
-        if (isCamera2Landscape) {
-          glInterface.setEncoderSize(videoEncoder.getWidth(), videoEncoder.getHeight());
+        boolean isPortrait = context.getResources().getConfiguration().orientation == 1;
+        if (isPortrait) {
+          glInterface.setEncoderSize(height, width);
         } else {
-          glInterface.setEncoderSize(videoEncoder.getHeight(), videoEncoder.getWidth());
+          glInterface.setEncoderSize(width, height);
         }
         glInterface.setRotation(rotation == 0 ? 270 : rotation - 90);
         glInterface.start();
-        cameraManager.prepareCamera(glInterface.getSurfaceTexture(), videoEncoder.getWidth(),
-            videoEncoder.getHeight());
+        cameraManager.prepareCamera(glInterface.getSurfaceTexture(), width, height);
       }
       cameraManager.openCameraFacing(cameraFacing);
       onPreview = true;
     }
   }
 
+  public void startPreview(CameraHelper.Facing cameraFacing, int rotation) {
+    startPreview(cameraFacing, videoEncoder.getWidth(), videoEncoder.getHeight(), rotation);
+  }
+
   public void startPreview(CameraHelper.Facing cameraFacing) {
-    startPreview(cameraFacing, CameraHelper.getCameraOrientation(context));
+    startPreview(cameraFacing, videoEncoder.getWidth(), videoEncoder.getHeight(),
+        CameraHelper.getCameraOrientation(context));
   }
 
   public void startPreview() {
@@ -332,7 +335,7 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
    */
   public void startStream(String url) {
     streaming = true;
-    if (!recording) {
+    if (!recordController.isRecording()) {
       startEncoders();
     } else {
       resetVideoEncoder();
@@ -372,9 +375,9 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
     if (glInterface != null && videoEnabled) {
       if (glInterface instanceof OffScreenGlThread) {
         glInterface = new OffScreenGlThread(context);
+        glInterface.init();
         ((OffScreenGlThread) glInterface).setFps(videoEncoder.getFps());
       }
-      glInterface.init();
       if (videoEncoder.getRotation() == 90 || videoEncoder.getRotation() == 270) {
         glInterface.setEncoderSize(videoEncoder.getHeight(), videoEncoder.getWidth());
       } else {
@@ -401,7 +404,7 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
       streaming = false;
       stopStreamRtp();
     }
-    if (!recording) {
+    if (!recordController.isRecording()) {
       cameraManager.closeCamera(!isBackground);
       onPreview = !isBackground;
       microphoneManager.stop();
@@ -414,8 +417,7 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
       }
       videoEncoder.stop();
       audioEncoder.stop();
-      videoFormat = null;
-      audioFormat = null;
+      recordController.resetFormats();
     }
   }
 
@@ -435,6 +437,15 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
    */
   public List<Size> getResolutionsFront() {
     return Arrays.asList(cameraManager.getCameraResolutionsFront());
+  }
+
+  /**
+   * Get supported properties of the camera
+   *
+   * @return CameraCharacteristics object
+   */
+  public CameraCharacteristics getCameraCharacteristics() {
+    return cameraManager.getCameraCharacteristics();
   }
 
   /**
@@ -576,7 +587,19 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
    * @return true if recording, false if not recoding.
    */
   public boolean isRecording() {
-    return recording;
+    return recordController.isRecording();
+  }
+
+  public void pauseRecord() {
+    recordController.pauseRecord();
+  }
+
+  public void resumeRecord() {
+    recordController.resumeRecord();
+  }
+
+  public RecordController.Status getRecordStatus() {
+    return recordController.getStatus();
   }
 
   /**
@@ -592,7 +615,7 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
 
   @Override
   public void getAacData(ByteBuffer aacBuffer, MediaCodec.BufferInfo info) {
-    if (canRecord && recording) mediaMuxer.writeSampleData(audioTrack, aacBuffer, info);
+    recordController.recordAudio(aacBuffer, info);
     if (streaming) getAacDataRtp(aacBuffer, info);
   }
 
@@ -612,18 +635,7 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
 
   @Override
   public void getVideoData(ByteBuffer h264Buffer, MediaCodec.BufferInfo info) {
-    if (recording) {
-      if (info.flags == MediaCodec.BUFFER_FLAG_KEY_FRAME
-          && !canRecord
-          && videoFormat != null
-          && audioFormat != null) {
-        videoTrack = mediaMuxer.addTrack(videoFormat);
-        audioTrack = mediaMuxer.addTrack(audioFormat);
-        mediaMuxer.start();
-        canRecord = true;
-      }
-      if (canRecord) mediaMuxer.writeSampleData(videoTrack, h264Buffer, info);
-    }
+    recordController.recordVideo(h264Buffer, info);
     if (streaming) getH264DataRtp(h264Buffer, info);
   }
 
@@ -634,11 +646,11 @@ public abstract class Camera2Base implements GetAacData, GetVideoData, GetMicrop
 
   @Override
   public void onVideoFormat(MediaFormat mediaFormat) {
-    videoFormat = mediaFormat;
+    recordController.setVideoFormat(mediaFormat);
   }
 
   @Override
   public void onAudioFormat(MediaFormat mediaFormat) {
-    audioFormat = mediaFormat;
+    recordController.setAudioFormat(mediaFormat);
   }
 }

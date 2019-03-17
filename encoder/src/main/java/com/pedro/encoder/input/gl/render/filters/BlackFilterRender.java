@@ -11,11 +11,11 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * Created by pedro on 9/07/18.
+ * Created by pedro on 29/01/18.
  */
 
 @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
-public class RotationFilterRender extends BaseFilterRender {
+public class BlackFilterRender extends BaseFilterRender {
 
   //rotation matrix
   private final float[] squareVertexDataFilter = {
@@ -33,23 +33,19 @@ public class RotationFilterRender extends BaseFilterRender {
   private int uSTMatrixHandle = -1;
   private int uSamplerHandle = -1;
 
-  private int rotation = 0;
-  private float[] rotationMatrix = new float[16];
-
-  public RotationFilterRender() {
+  public BlackFilterRender() {
     squareVertex = ByteBuffer.allocateDirect(squareVertexDataFilter.length * FLOAT_SIZE_BYTES)
         .order(ByteOrder.nativeOrder())
         .asFloatBuffer();
     squareVertex.put(squareVertexDataFilter).position(0);
     Matrix.setIdentityM(MVPMatrix, 0);
     Matrix.setIdentityM(STMatrix, 0);
-    Matrix.setIdentityM(rotationMatrix, 0);
   }
 
   @Override
   protected void initGlFilter(Context context) {
     String vertexShader = GlUtil.getStringFromRaw(context, R.raw.simple_vertex);
-    String fragmentShader = GlUtil.getStringFromRaw(context, R.raw.simple_fragment);
+    String fragmentShader = GlUtil.getStringFromRaw(context, R.raw.black_fragment);
 
     program = GlUtil.createProgram(vertexShader, fragmentShader);
     aPositionHandle = GLES20.glGetAttribLocation(program, "aPosition");
@@ -61,9 +57,6 @@ public class RotationFilterRender extends BaseFilterRender {
 
   @Override
   protected void drawFilter() {
-    GLES20.glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT | GLES20.GL_COLOR_BUFFER_BIT);
-
     GLES20.glUseProgram(program);
 
     squareVertex.position(SQUARE_VERTEX_DATA_POS_OFFSET);
@@ -88,18 +81,5 @@ public class RotationFilterRender extends BaseFilterRender {
   public void release() {
     GLES20.glDeleteProgram(program);
   }
-
-  public int getRotation() {
-    return rotation;
-  }
-
-  public void setRotation(int rotation) {
-    this.rotation = rotation;
-    //Set rotation
-    Matrix.setRotateM(rotationMatrix, 0, rotation, 0, 0, 1.0f);
-    //Translation
-    //Matrix.translateM(rotationMatrix, 0, 0f, 0f, 0f);
-    // Combine the rotation matrix with the projection and camera view
-    Matrix.multiplyMM(MVPMatrix, 0, rotationMatrix, 0, MVPMatrix, 0);
-  }
 }
+

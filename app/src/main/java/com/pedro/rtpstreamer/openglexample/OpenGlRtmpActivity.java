@@ -21,9 +21,11 @@ import com.pedro.encoder.input.gl.SpriteGestureController;
 import com.pedro.encoder.input.gl.render.filters.AndroidViewFilterRender;
 import com.pedro.encoder.input.gl.render.filters.BasicDeformationFilterRender;
 import com.pedro.encoder.input.gl.render.filters.BeautyFilterRender;
+import com.pedro.encoder.input.gl.render.filters.BlackFilterRender;
 import com.pedro.encoder.input.gl.render.filters.BlurFilterRender;
 import com.pedro.encoder.input.gl.render.filters.BrightnessFilterRender;
 import com.pedro.encoder.input.gl.render.filters.CartoonFilterRender;
+import com.pedro.encoder.input.gl.render.filters.CircleFilterRender;
 import com.pedro.encoder.input.gl.render.filters.ColorFilterRender;
 import com.pedro.encoder.input.gl.render.filters.ContrastFilterRender;
 import com.pedro.encoder.input.gl.render.filters.DuotoneFilterRender;
@@ -145,6 +147,9 @@ public class OpenGlRtmpActivity extends AppCompatActivity
       case R.id.beauty:
         rtmpCamera1.getGlInterface().setFilter(new BeautyFilterRender());
         return true;
+      case R.id.black:
+        rtmpCamera1.getGlInterface().setFilter(new BlackFilterRender());
+        return true;
       case R.id.blur:
         rtmpCamera1.getGlInterface().setFilter(new BlurFilterRender());
         return true;
@@ -153,6 +158,9 @@ public class OpenGlRtmpActivity extends AppCompatActivity
         return true;
       case R.id.cartoon:
         rtmpCamera1.getGlInterface().setFilter(new CartoonFilterRender());
+        return true;
+      case R.id.circle:
+        rtmpCamera1.getGlInterface().setFilter(new CircleFilterRender());
         return true;
       case R.id.color:
         rtmpCamera1.getGlInterface().setFilter(new ColorFilterRender());
